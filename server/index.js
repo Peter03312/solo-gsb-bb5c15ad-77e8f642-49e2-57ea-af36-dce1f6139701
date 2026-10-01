@@ -11,6 +11,7 @@ const qc = require('./qc');
 const recut = require('./recut');
 const actors = require('./actors');
 const i18n = require('./translation');
+const delivery = require('./delivery');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -833,6 +834,74 @@ app.get('/api/branches/:id/qc/export', (req, res, next) => {
   }
 });
 
+// ---------------- 排练交付包 ----------------
+
+// 签发交付包：同一事务内基于同一次一致状态生成 普通 SRT / 双语 SRT / 走词单 / 清单；
+// 普通时间线、双语复核、演员归属、质检实时闸门任一失败时按类别返回问题，整包不留存。
+app.post('/api/branches/:id/deliveries', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const pkg = delivery.issuePackage(db, id, getBranchSegments);
+    res.status(201).json({ ok: true, package: pkg });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 当前分支已签发包（可重下；内容为签发时快照，不受后续修改影响）
+app.get('/api/branches/:id/deliveries', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    res.json({ packages: delivery.listPackagesForBranch(db, id) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 整份稿件的已签发包
+app.get('/api/scripts/:id/deliveries', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    res.json({ packages: delivery.listPackagesForScript(db, id) });
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 交付包详情（含清单与各文件 SHA-256）
+app.get('/api/deliveries/:pid', (req, res, next) => {
+  try {
+    const pid = parseInt(req.params.pid, 10);
+    res.json(delivery.getPackage(db, pid));
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 重下整包 ZIP（内容固化于签发时）
+app.get('/api/deliveries/:pid/download', (req, res, next) => {
+  try {
+    const pid = parseInt(req.params.pid, 10);
+    const file = delivery.getZip(db, pid);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    res.type(file.media_type).send(file.data);
+  } catch (e) {
+    next(e);
+  }
+});
+
+// 重下包内单个文件（role: srt | bilingual_srt | cue_sheet | manifest）
+app.get('/api/deliveries/:pid/files/:role', (req, res, next) => {
+  try {
+    const pid = parseInt(req.params.pid, 10);
+    const file = delivery.getPackageFile(db, pid, req.params.role);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    res.type(file.media_type).send(file.data);
+  } catch (e) {
+    next(e);
+  }
+});
+
 // ---------------- 错误处理 ----------------
 
 app.use((err, req, res, next) => {
@@ -854,7 +923,8 @@ app.use((err, req, res, next) => {
     ...(err.invalid_exemptions ? { invalid_exemptions: err.invalid_exemptions } : {}),
     ...(err.report_stale != null ? { report_stale: err.report_stale } : {}),
     ...(err.recut_errors ? { recut_errors: err.recut_errors } : {}),
-    ...(err.preview_stale != null ? { preview_stale: err.preview_stale } : {})
+    ...(err.preview_stale != null ? { preview_stale: err.preview_stale } : {}),
+    ...(err.delivery_issues ? { delivery_issues: err.delivery_issues } : {})
   });
 });
 

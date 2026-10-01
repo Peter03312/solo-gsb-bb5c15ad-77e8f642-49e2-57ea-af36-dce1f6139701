@@ -137,6 +137,39 @@ CREATE TABLE IF NOT EXISTS qc_exemptions (
   revoked_at TEXT
 );
 
+-- 排练交付包：签发时刻的不可变快照（整包 ZIP 与各文件内容均固化在库中，
+-- 后续改稿/改演员/改质检规则不影响已签发包；删除稿件时随外键级联清理）
+CREATE TABLE IF NOT EXISTS delivery_packages (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  script_id        INTEGER NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+  branch_id        INTEGER NOT NULL REFERENCES branches(id) ON DELETE CASCADE,
+  issued_at        TEXT NOT NULL,             -- 签发时间（UTC，YYYY-MM-DD HH:MM:SS）
+  segment_count    INTEGER NOT NULL,
+  state_hash       TEXT NOT NULL,             -- 签发所用一致状态指纹（片段快照 + 规则指纹）
+  rule_version_id  INTEGER,                   -- 签发时的质检规则版本（快照，不用外键以防版本归档差异）
+  rule_version_no  INTEGER,
+  rule_fingerprint TEXT,
+  zip_filename     TEXT NOT NULL,
+  zip_blob         BLOB,
+  zip_size         INTEGER,
+  zip_sha256       TEXT,
+  manifest_json    TEXT NOT NULL DEFAULT '{}',
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 交付包内文件：普通 SRT / 双语 SRT / 演员走词单 / 清单（内容与 SHA-256 固化）
+CREATE TABLE IF NOT EXISTS delivery_files (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  package_id  INTEGER NOT NULL REFERENCES delivery_packages(id) ON DELETE CASCADE,
+  ord         INTEGER NOT NULL,               -- 包内顺序
+  role        TEXT NOT NULL,                  -- srt | bilingual_srt | cue_sheet | manifest
+  filename    TEXT NOT NULL,
+  media_type  TEXT NOT NULL,
+  content     BLOB NOT NULL,
+  size_bytes  INTEGER NOT NULL,
+  sha256      TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_source_segments_script ON source_segments(script_id);
 CREATE INDEX IF NOT EXISTS idx_branches_script ON branches(script_id);
 CREATE INDEX IF NOT EXISTS idx_actors_script ON actors(script_id);

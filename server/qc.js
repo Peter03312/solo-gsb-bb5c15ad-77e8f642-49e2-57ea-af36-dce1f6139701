@@ -690,49 +690,98 @@ function revokeExemption(db, branchId, exemptionId, getSegments) {
 // ---------------- 导出闸门 ----------------
 
 /**
- * 质检专用下载的实时核验：重新核验分支、规则、豁免与当前时间线。
- * 仍有未豁免命中或时间线错误时抛出 409（携带具体问题）；否则返回片段。
+ * 质检专用下载的实时核验核心：对给定的分支片段快照重新核验规则、豁免与时间线。
+ * 同一快照可被普通质检导出与排练交付签发复用，保证判定口径完全一致。
+ *
+ * 前置问题（未配置规则 / 尚未生成报告）以 precondition 形式返回；
+ * 未豁免命中、时间线错误、失效豁免与报告失效标记实时计算。
+ * @returns {{branch,rules,segments,timelineIssues,unresolvedHits,invalidExemptions,reportStale,precondition:Array<{code,message}>}}
  */
-function checkGate(db, branchId, getSegments) {
-  const branch = getBranchWithScript(db, branchId);
+function inspectGate(db, branchId, getSegments, provided) {
+  const branch = (provided && provided.branch) || getBranchWithScript(db, branchId);
   const rules = getCurrentRulesRow(db, branch.script_id);
+  const precondition = [];
   if (!rules) {
-    throw new QcError(409, '尚未配置质检规则，无法进行质检导出，请先配置规则并生成质检报告');
+    precondition.push({
+      code: 'rules_not_configured',
+      message: '尚未配置质检规则，无法进行质检导出，请先配置规则并生成质检报告'
+    });
   }
 
   const latest = db.prepare(
     'SELECT id FROM qc_reports WHERE branch_id = ? ORDER BY id DESC LIMIT 1'
   ).get(branchId);
-  if (!latest) throw new QcError(409, '尚未生成质检报告，请先运行放映质检');
-
-  const segments = getSegments(db, branchId).map(withRev(db, branchId));
-  const timelineIssues = validateTimeline(segments);
-  const seqMap = sourceSeqMap(db, branch.script_id);
-  const hits = evaluate(segments, rules, seqMap);
-
-  const segById = new Map(segments.map((s) => [s.id, s]));
-  const exemptions = db.prepare(`
-    SELECT * FROM qc_exemptions
-    WHERE branch_id = ? AND rule_version_id = ? AND revoked_at IS NULL
-  `).all(branchId, rules.id);
-  const activeKeys = new Set();
-  const invalidExemptions = [];
-  for (const ex of exemptions) {
-    const verdict = checkExemption(ex, segById);
-    if (verdict.ok) activeKeys.add(ex.hit_key);
-    else invalidExemptions.push(exemptionApi(ex, verdict.reason));
+  if (!latest) {
+    precondition.push({ code: 'report_missing', message: '尚未生成质检报告，请先运行放映质检' });
   }
 
-  const unresolvedHits = hits.filter((h) => !activeKeys.has(h.hit_key));
+  const baseSegments = (provided && provided.segments) || getSegments(db, branchId);
+  const revById = new Map(
+    db.prepare('SELECT id, rev FROM branch_segments WHERE branch_id = ?')
+      .all(branchId)
+      .map((r) => [r.id, r.rev])
+  );
+  const segments = baseSegments.map((seg) => ({ ...seg, rev: revById.get(seg.id) ?? 1 }));
+  const timelineIssues = validateTimeline(segments);
+
+  let unresolvedHits = [];
+  let invalidExemptions = [];
+  if (rules) {
+    const seqMap = sourceSeqMap(db, branch.script_id);
+    const hits = evaluate(segments, rules, seqMap);
+
+    const segById = new Map(segments.map((s) => [s.id, s]));
+    const exemptions = db.prepare(`
+      SELECT * FROM qc_exemptions
+      WHERE branch_id = ? AND rule_version_id = ? AND revoked_at IS NULL
+    `).all(branchId, rules.id);
+    const activeKeys = new Set();
+    for (const ex of exemptions) {
+      const verdict = checkExemption(ex, segById);
+      if (verdict.ok) activeKeys.add(ex.hit_key);
+      else invalidExemptions.push(exemptionApi(ex, verdict.reason));
+    }
+
+    unresolvedHits = hits.filter((h) => !activeKeys.has(h.hit_key));
+  }
 
   // 最新报告是否仍有效（仅作提示：硬判定一律以实时核验的命中与时间线为准）
-  const reportState = getReport(db, latest.id, getSegments);
-  const reportStale = reportState.state_changed || reportState.stale;
+  let reportStale = false;
+  if (latest) {
+    const reportState = getReport(db, latest.id, getSegments);
+    reportStale = reportState.state_changed || reportState.stale;
+  }
 
-  if (unresolvedHits.length || timelineIssues.length) {
-    throw new QcError(409, `质检核验未通过，未生成 SRT（未豁免命中 ${unresolvedHits.length} 条，时间线问题 ${timelineIssues.length} 处${reportStale ? '；另：报告已失效，建议重新生成' : ''}）`, {
-      timeline_issues: timelineIssues,
-      unresolved_hits: unresolvedHits.map((h) => ({
+  return {
+    branch,
+    rules,
+    segments,
+    timelineIssues,
+    unresolvedHits,
+    invalidExemptions,
+    reportStale,
+    precondition
+  };
+}
+
+/**
+ * 质检专用下载的实时核验：重新核验分支、规则、豁免与当前时间线。
+ * 仍有未豁免命中或时间线错误时抛出 409（携带具体问题）；否则返回片段。
+ */
+function checkGate(db, branchId, getSegments) {
+  const gate = inspectGate(db, branchId, getSegments);
+  if (gate.precondition.length) {
+    throw new QcError(409, gate.precondition[gate.precondition.length - 1].message);
+  }
+  const {
+    branch, segments, rules, timelineIssues: timelineIssuesRaw,
+    unresolvedHits: unresolvedRaw, invalidExemptions, reportStale
+  } = gate;
+
+  if (unresolvedRaw.length || timelineIssuesRaw.length) {
+    throw new QcError(409, `质检核验未通过，未生成 SRT（未豁免命中 ${unresolvedRaw.length} 条，时间线问题 ${timelineIssuesRaw.length} 处${reportStale ? '；另：报告已失效，建议重新生成' : ''}）`, {
+      timeline_issues: timelineIssuesRaw,
+      unresolved_hits: unresolvedRaw.map((h) => ({
         rule_type: h.rule_type,
         rule_label: RULE_LABELS[h.rule_type] || h.rule_type,
         ord: h.ord,
@@ -745,7 +794,7 @@ function checkGate(db, branchId, getSegments) {
     });
   }
 
-  return { branch, segments, reportStale };
+  return { branch, segments, rules, reportStale };
 }
 
 module.exports = {
@@ -763,6 +812,7 @@ module.exports = {
   getLatestReport,
   grantExemption,
   revokeExemption,
+  inspectGate,
   checkGate,
   RULE_LABELS
 };

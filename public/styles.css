@@ -369,3 +369,16 @@ table.qc-table { width: 100%; border-collapse: collapse; border: 1px solid var(-
 }
 #cuePanel .col-cue-tc { width: 190px; }
 #cuePanel .col-cue-src { width: 90px; color: var(--muted); }
+
+/* ---------------- 排练交付 ---------------- */
+#deliveryPanel {
+  margin-top: 22px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px 18px;
+}
+#deliveryPanel .col-cue-src { width: 150px; color: var(--muted); }
+#deliveryPanel .mono { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-size: 11px; }
+#deliveryPanel .del-cat { margin-top: 8px; }
+#deliveryPanel .dl-pkg { padding: 4px 10px; font-size: 12px; white-space: nowrap; }

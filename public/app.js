@@ -125,6 +125,7 @@ async function selectBranch(id) {
   renderEditor();
   await refreshCuePanel();
   await refreshQcPanel();
+  await refreshDeliveryPanel();
 }
 
 // ---------------- 编辑器 ----------------
@@ -159,6 +160,7 @@ function renderEditor() {
       <a class="btn" id="btnCueExport" href="/api/branches/${b.id}/cue-sheet/export" download>下载演员走词单</a>
       <a class="btn" id="btnExport" href="/api/branches/${b.id}/export" download>导出 SRT</a>
       <a class="btn" id="btnBiExport" href="/api/branches/${b.id}/export-bilingual" download>导出双语 SRT</a>
+      <button id="btnIssueDelivery" class="primary">签发交付包</button>
     </div>
     <div id="validateResult"></div>
     <table class="seg-table">
@@ -236,6 +238,7 @@ function renderEditor() {
     e.preventDefault();
     exportBilingual();
   };
+  $('#btnIssueDelivery').onclick = issueDelivery;
 
   $$('#editor tbody tr').forEach((tr) => {
     const id = Number(tr.dataset.id);
@@ -1193,6 +1196,156 @@ async function qcExport() {
     URL.revokeObjectURL(a.href);
     toast('质检核验通过，已导出 SRT', 'ok');
   } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+// ---------------- 排练交付包 ----------------
+
+const deliveryState = { packages: [] };
+
+async function refreshDeliveryPanel() {
+  if (!state.branchId) { $('#deliveryPanel').innerHTML = ''; return; }
+  try {
+    const data = await api(`/api/branches/${state.branchId}/deliveries`);
+    deliveryState.packages = data.packages || [];
+  } catch (e) {
+    deliveryState.packages = [];
+  }
+  renderDeliveryPanel();
+}
+
+function shortHash(h) {
+  return h ? `${String(h).slice(0, 12)}…` : '—';
+}
+
+function renderDeliveryPanel() {
+  const panel = $('#deliveryPanel');
+  const pkgs = deliveryState.packages;
+
+  let html = `
+    <div class="qc-head">
+      <div class="qc-title">排练交付
+        <span class="src-tag">${pkgs.length} 个已签发包</span>
+      </div>
+      <div class="qc-actions">
+        <button id="btnDeliveryRefresh">刷新</button>
+        <button id="btnDeliveryIssue" class="primary">签发交付包</button>
+      </div>
+    </div>
+    <div class="qc-banner">
+      签发会基于<b>同一次一致状态</b>固化生成 ZIP：普通 SRT、双语 SRT、演员走词单与清单
+      （清单记录稿件/分支、签发时间、质检规则版本及各文件 SHA-256）。
+      须同时通过：普通时间线、双语译文已复核、演员已全部归属、放映质检实时核验；
+      任一项失败都会按类别列出问题，<b>整包不留存</b>。签发期间发生改稿、改演员或改质检设置不会混入不同版本。
+      已签发包后续修改不改变内容，可随时重下。
+    </div>
+    <div id="deliveryIssues"></div>`;
+
+  if (!pkgs.length) {
+    html += '<div class="qc-banner warn">当前分支还没有签发过交付包。全部闸门通过后点「签发交付包」。</div>';
+  } else {
+    html += `<table class="qc-table"><thead><tr>
+      <th class="col-ord">包#</th><th>签发时间</th><th>分支/稿件</th><th class="col-rule">规则/片段</th>
+      <th class="col-rule">整包 SHA-256</th><th class="col-cue-src">文件</th><th class="col-ops">下载</th>
+    </tr></thead><tbody>
+    ${pkgs.map((p) => `
+      <tr>
+        <td class="col-ord">${p.id}</td>
+        <td>${esc(p.issued_at)}</td>
+        <td>${esc(p.branch_name)}<div class="meta">${esc(p.script_name)}</div></td>
+        <td>${p.rule_version_no != null ? `规则 v${p.rule_version_no}` : '未配置规则'}
+            <div class="meta">${p.segment_count} 片段</div>
+            <div class="meta" title="${esc(p.state_hash)}">状态 ${shortHash(p.state_hash)}</div></td>
+        <td class="meta mono" title="${esc(p.zip_sha256 || '')}">${shortHash(p.zip_sha256)}</td>
+        <td>
+          <a class="link-btn" href="/api/deliveries/${p.id}/files/srt" download>普通SRT</a>
+          <a class="link-btn" href="/api/deliveries/${p.id}/files/bilingual_srt" download>双语SRT</a>
+          <a class="link-btn" href="/api/deliveries/${p.id}/files/cue_sheet" download>走词单</a>
+          <a class="link-btn" href="/api/deliveries/${p.id}/files/manifest" download>清单</a>
+        </td>
+        <td class="col-ops">
+          <a class="btn dl-pkg" href="/api/deliveries/${p.id}/download" download>下载整包 ZIP</a>
+        </td>
+      </tr>`).join('')}
+    </tbody></table>`;
+  }
+
+  panel.innerHTML = html;
+  $('#btnDeliveryRefresh').onclick = refreshDeliveryPanel;
+  $('#btnDeliveryIssue').onclick = issueDelivery;
+}
+
+function renderDeliveryIssues(categories) {
+  const box = $('#deliveryIssues');
+  if (!categories) { box.innerHTML = ''; return; }
+
+  const sections = [];
+
+  const tl = categories.timeline;
+  if (tl && !tl.ok) {
+    sections.push({
+      title: `普通时间线问题（${tl.issues.length} 处）`,
+      items: tl.issues.map((i) => `${i.ord ? `片段 #${i.ord}：` : ''}${esc(i.message)}`)
+    });
+  }
+
+  const bi = categories.bilingual;
+  if (bi && !bi.ok) {
+    sections.push({
+      title: `双语译文问题（${bi.issues.length} 条）`,
+      items: bi.issues.map((i) =>
+        `片段 #${i.ord}（${esc(i.timecode || '')}）：${i.issue === 'missing_translation' ? '空译文，请先录入译文' : '译文待复核，请复核后标记'}`)
+    });
+  }
+
+  const ac = categories.actors;
+  if (ac && !ac.ok) {
+    sections.push({
+      title: `未归属演员（${ac.issues.length} 条）`,
+      items: ac.issues.map((i) =>
+        `片段 #${i.ord}（${esc(i.timecode || '')}）${i.text_excerpt ? `：${esc(i.text_excerpt)}` : ''}`)
+    });
+  }
+
+  const q = categories.qc;
+  if (q && !q.ok) {
+    const items = [];
+    (q.precondition || []).forEach((p) => items.push(esc(p.message)));
+    (q.unresolved_hits || []).forEach((h) =>
+      items.push(`片段 #${h.ord} [${esc(h.rule_label)}]：${esc(h.message)}`));
+    (q.invalid_exemptions || []).forEach((x) =>
+      items.push(`已失效豁免（片段 #${x.ord}）：${esc(x.invalid_reason)}`));
+    if (q.report_stale) items.push('质检报告已失效，请重新生成质检报告（实时命中仍须全部豁免）');
+    sections.push({ title: '放映质检未达标', items });
+  } else if (q && q.ok && q.report_stale) {
+    sections.push({
+      title: '放映质检提示',
+      items: ['质检报告已失效（当前实时核验无未豁免命中，仍可签发；建议重新生成报告留档）']
+    });
+  }
+
+  box.innerHTML = `<div class="qc-banner bad">✗ 交付包签发被拒绝，<b>整包未留存</b>。请按下列类别逐条处理后重新签发：
+    ${sections.map((s) => `<div class="del-cat"><b>${s.title}</b>
+      <ul class="issue-list">${s.items.map((t) => `<li>${t}</li>`).join('')}</ul></div>`).join('')}
+  </div>`;
+}
+
+async function issueDelivery() {
+  if (!confirm('按当前分支内容签发交付包？\n将同时核验：普通时间线、双语译文复核、演员归属、放映质检实时闸门；全部通过后生成不可变 ZIP 并留存。')) return;
+  try {
+    const result = await api(`/api/branches/${state.branchId}/deliveries`, { method: 'POST' });
+    await refreshDeliveryPanel();
+    toast(`交付包 #${result.package.id} 已签发，开始下载 ZIP`, 'ok');
+    // 自动下载整包
+    const a = document.createElement('a');
+    a.href = `/api/deliveries/${result.package.id}/download`;
+    a.download = result.package.zip_filename;
+    a.click();
+  } catch (e) {
+    if (e.data && e.data.delivery_issues) {
+      renderDeliveryIssues(e.data.delivery_issues);
+    }
     toast(e.message, 'error');
   }
 }
