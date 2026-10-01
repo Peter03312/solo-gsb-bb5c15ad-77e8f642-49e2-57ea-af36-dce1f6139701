@@ -1,0 +1,18 @@
+{
+  "name": "rehearsal-srt",
+  "version": "1.0.0",
+  "description": "排练字幕修订 Web 应用：导入 SRT，双分支修订、按来源片段三方合并、放映质检（规则/报告/豁免）后导出",
+  "main": "server/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1"
+  }
+}

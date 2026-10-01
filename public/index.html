@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>排练字幕修订</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header>
+  <h1>排练字幕修订</h1>
+  <div class="header-actions">
+    <button id="btnImport" class="primary">导入 SRT</button>
+  </div>
+</header>
+
+<main>
+  <aside id="sidebar">
+    <h2>稿件列表</h2>
+    <ul id="scriptList"></ul>
+  </aside>
+
+  <section id="content">
+    <div id="emptyHint" class="hint">请导入一份 SRT 稿件开始修订。<br>导入后会自动建立两条修订分支。</div>
+    <div id="workspace" hidden>
+      <div class="ws-head">
+        <div>
+          <h2 id="scriptTitle"></h2>
+          <div class="meta" id="scriptMeta"></div>
+        </div>
+        <div class="ws-actions">
+          <button id="btnViewOriginal">查看原稿</button>
+          <a id="btnDownloadOriginal" class="btn" download>下载原稿</a>
+          <button id="btnActors">演员名单</button>
+          <button id="btnQcRules">质检规则</button>
+          <button id="btnMerge" class="primary">合并两条分支</button>
+          <button id="btnDeleteScript" class="danger">删除稿件</button>
+        </div>
+      </div>
+
+      <div class="tabs" id="branchTabs"></div>
+      <div id="editor"></div>
+      <div id="cuePanel"></div>
+      <div id="qcPanel"></div>
+    </div>
+  </section>
+</main>
+
+<!-- 导入对话框 -->
+<dialog id="dlgImport">
+  <form method="dialog" id="formImport">
+    <h3>导入 SRT 稿件</h3>
+    <label>稿件名称（可选，默认用文件名）
+      <input type="text" id="importName" placeholder="例如：第三幕联排">
+    </label>
+    <label>SRT 文件
+      <input type="file" id="importFile" accept=".srt,text/plain" required>
+    </label>
+    <div id="importErrors" class="error-box" hidden></div>
+    <menu>
+      <button value="cancel" type="button" id="importCancel">取消</button>
+      <button type="button" class="primary" id="importSubmit">导入</button>
+    </menu>
+  </form>
+</dialog>
+
+<!-- 原稿查看对话框 -->
+<dialog id="dlgOriginal">
+  <h3>原稿内容</h3>
+  <pre id="originalText"></pre>
+  <menu>
+    <button value="cancel" class="primary" id="originalClose">关闭</button>
+  </menu>
+</dialog>
+
+<!-- 合并对话框 -->
+<dialog id="dlgMerge">
+  <h3>合并修订分支</h3>
+  <div id="mergeSummary" class="meta"></div>
+  <div id="mergeEntries"></div>
+  <menu>
+    <button type="button" id="mergeCancel">取消</button>
+    <button type="button" class="primary" id="mergeSubmit" disabled>全部冲突已选择，生成合并分支</button>
+  </menu>
+</dialog>
+
+<!-- 重剪重排对话框 -->
+<dialog id="dlgRecut">
+  <h3>重剪重排（按原稿来源序号区间）</h3>
+  <div class="dlg-body">
+    <p class="meta">
+      选择一段<b>连续的原稿来源序号区间</b>，并填写该区间在新版视频中的起止时码：
+      区间内完整片段保持相对位置等比重排，区间之后的片段整体平移（平移量 = 新区间终点 − 原区间终点），区间之前不动。
+      同一来源拆出的片段会一起处理；跨越选择边界的合并片段将被拒绝。
+    </p>
+    <div class="recut-form">
+      <label>来源起始序号
+        <input type="number" id="rcLo" min="1" step="1" placeholder="如 2">
+      </label>
+      <label>来源结束序号
+        <input type="number" id="rcHi" min="1" step="1" placeholder="如 3">
+      </label>
+      <label>新区间起点 HH:MM:SS,mmm
+        <input type="text" id="rcStart" placeholder="00:00:05,000">
+      </label>
+      <label>新区间终点 HH:MM:SS,mmm
+        <input type="text" id="rcEnd" placeholder="00:00:08,000">
+      </label>
+    </div>
+    <div class="recut-actions">
+      <button type="button" id="recutPreview" class="primary">生成预览</button>
+      <span id="recutHint" class="meta"></span>
+    </div>
+    <div id="recutErrors" class="error-box" hidden></div>
+    <div id="recutResult"></div>
+  </div>
+  <menu>
+    <button type="button" id="recutCancel">关闭</button>
+    <button type="button" class="primary" id="recutSubmit" disabled>确认提交（整体成功或不改动）</button>
+  </menu>
+</dialog>
+
+<!-- 质检规则对话框 -->
+<dialog id="dlgQcRules">
+  <h3>放映质检规则</h3>
+  <div class="dlg-body">
+    <p class="meta">阈值留空表示不启用该项；时长/间隔按秒计，字符按可见字符计（空白不计，中文与标点各算一字）。无效阈值、空词或重复词将拒绝保存。</p>
+    <div class="qc-form">
+      <label>单条显示时长下限（秒）
+        <input type="text" id="qcMinDur" inputmode="decimal" placeholder="如 1">
+      </label>
+      <label>单条显示时长上限（秒）
+        <input type="text" id="qcMaxDur" inputmode="decimal" placeholder="如 7">
+      </label>
+      <label>每秒可见字符数上限（字符/秒）
+        <input type="text" id="qcMaxCps" inputmode="decimal" placeholder="如 9">
+      </label>
+      <label>相邻片段最小间隔（秒）
+        <input type="text" id="qcMinGap" inputmode="decimal" placeholder="如 0.2">
+      </label>
+      <label class="full">禁用词（每行一个，也可用逗号分隔）
+        <textarea id="qcBanned" rows="4" placeholder="例如：&#10;临时字幕&#10;待定"></textarea>
+      </label>
+    </div>
+    <div id="qcRuleMeta" class="meta"></div>
+    <div id="qcRuleErrors" class="error-box" hidden></div>
+  </div>
+  <menu>
+    <button type="button" id="qcRulesCancel">取消</button>
+    <button type="button" class="primary" id="qcRulesSave">保存规则</button>
+  </menu>
+</dialog>
+
+<!-- 演员名单对话框 -->
+<dialog id="dlgActors">
+  <h3>演员名单</h3>
+  <div class="dlg-body">
+    <p class="meta">为该稿件登记演员姓名。保存后可在片段表格的「演员」列逐条归属；重命名会同步所有分支上的归属显示。</p>
+    <div class="actor-add">
+      <input type="text" id="actorNameInput" placeholder="输入演员姓名，回车或点添加" maxlength="50">
+      <button type="button" class="primary" id="actorAddBtn">添加演员</button>
+    </div>
+    <div id="actorErrors" class="error-box" hidden></div>
+    <ul id="actorList" class="actor-list"></ul>
+  </div>
+  <menu>
+    <button type="button" class="primary" id="actorsClose">完成</button>
+  </menu>
+</dialog>
+
+<div id="toast" hidden></div>
+<script src="/app.js"></script>
+</body>
+</html>
