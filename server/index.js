@@ -11,6 +11,7 @@ const qc = require('./qc');
 const recut = require('./recut');
 const actors = require('./actors');
 const i18n = require('./translation');
+const delivery = require('./delivery');
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -833,6 +834,78 @@ app.get('/api/branches/:id/qc/export', (req, res, next) => {
   }
 });
 
+// ---------------- 排练交付包 ----------------
+
+// 签发前预检：按类别返回四个闸门的实时状态与问题（普通时间线 / 双语复核 / 演员归属 / 质检）
+app.get('/api/branches/:id/delivery/check', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    getBranchOr404(id);
+    res.json(delivery.checkDelivery(db, id, getBranchSegments));
+  } catch (e) { next(e); }
+});
+
+// 列出某稿件下已签发的交付包（内容不可变，可随时重下）
+app.get('/api/scripts/:id/deliveries', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    res.json(delivery.listForScript(db, id));
+  } catch (e) { next(e); }
+});
+
+// 列出某分支上已签发的交付包
+app.get('/api/branches/:id/deliveries', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    getBranchOr404(id);
+    res.json(delivery.listForBranch(db, id));
+  } catch (e) { next(e); }
+});
+
+// 签发交付包：四闸门必须全部实时通过，任一失败按类别列出问题且整包不留存
+app.post('/api/branches/:id/deliveries', (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    getBranchOr404(id);
+    const pkg = delivery.issueDelivery(db, id, getBranchSegments);
+    res.status(201).json({ ok: true, package: pkg });
+  } catch (e) { next(e); }
+});
+
+// 查看单个已签发包的清单（稿件/分支、签发时间、规则版本、各文件 SHA-256、状态指纹）
+app.get('/api/deliveries/:pid', (req, res, next) => {
+  try {
+    const pid = parseInt(req.params.pid, 10);
+    res.json(delivery.getDelivery(db, pid));
+  } catch (e) { next(e); }
+});
+
+// 重下整包 ZIP（字节与签发时完全一致）
+app.get('/api/deliveries/:pid/download', (req, res, next) => {
+  try {
+    const pid = parseInt(req.params.pid, 10);
+    const { api, buffer } = delivery.getZip(db, pid);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(api.zip_filename)}`);
+    res.type('application/zip').send(buffer);
+  } catch (e) { next(e); }
+});
+
+// 重下包内单个文件：/api/deliveries/:pid/files/:fid 或 /files/:role（srt|bilingual_srt|cue_sheet|manifest）
+function serveDeliveryFile(req, res, next, selector) {
+  try {
+    const pid = parseInt(req.params.pid, 10);
+    const { api, file } = delivery.getFile(db, pid, selector);
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    res.type(file.media_type).send(file.content);
+  } catch (e) { next(e); }
+}
+app.get('/api/deliveries/:pid/files/by-id/:fid', (req, res, next) => {
+  serveDeliveryFile(req, res, next, parseInt(req.params.fid, 10));
+});
+app.get('/api/deliveries/:pid/files/:role', (req, res, next) => {
+  serveDeliveryFile(req, res, next, req.params.role);
+});
+
 // ---------------- 错误处理 ----------------
 
 app.use((err, req, res, next) => {
@@ -854,7 +927,9 @@ app.use((err, req, res, next) => {
     ...(err.invalid_exemptions ? { invalid_exemptions: err.invalid_exemptions } : {}),
     ...(err.report_stale != null ? { report_stale: err.report_stale } : {}),
     ...(err.recut_errors ? { recut_errors: err.recut_errors } : {}),
-    ...(err.preview_stale != null ? { preview_stale: err.preview_stale } : {})
+    ...(err.preview_stale != null ? { preview_stale: err.preview_stale } : {}),
+    ...(err.gates ? { gates: err.gates } : {}),
+    ...(err.state_changed != null ? { state_changed: err.state_changed } : {})
   });
 });
 

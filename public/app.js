@@ -125,6 +125,7 @@ async function selectBranch(id) {
   renderEditor();
   await refreshCuePanel();
   await refreshQcPanel();
+  await refreshDeliveryPanel();
 }
 
 // ---------------- 编辑器 ----------------
@@ -1195,6 +1196,157 @@ async function qcExport() {
   } catch (e) {
     toast(e.message, 'error');
   }
+}
+
+// ---------------- 排练交付包 ----------------
+
+async function refreshDeliveryPanel() {
+  if (!state.branchId) { $('#deliveryPanel').innerHTML = ''; return; }
+  const panel = $('#deliveryPanel');
+  try {
+    const [chk, lst] = await Promise.all([
+      api(`/api/branches/${state.branchId}/delivery/check`),
+      api(`/api/branches/${state.branchId}/deliveries`)
+    ]);
+    renderDeliveryPanel(chk, lst);
+  } catch (e) {
+    panel.innerHTML = '';
+  }
+}
+
+function renderDeliveryGate(k, g) {
+  const head = g.ok
+    ? `<div class="dl-gate ok">✓ ${esc(g.label)}</div>`
+    : `<div class="dl-gate bad">✗ ${esc(g.label)}（${g.issue_count} 项问题）</div>`;
+  if (g.ok) return head;
+
+  const items = [];
+  (g.issues || []).forEach((x) => {
+    const where = x.ord
+      ? `片段 #${x.ord}${x.timecode ? `（${x.timecode}）` : ''}`
+      : '';
+    const msg = x.message || (x.issue === 'missing_translation' ? '缺少译文'
+      : x.issue === 'pending_review' ? '译文待复核' : '');
+    items.push(`<li>${where ? `<span class="e-line">${where}：</span>` : ''}${esc(msg)}</li>`);
+  });
+  if (k === 'qc') {
+    if (g.message) items.push(`<li>${esc(g.message)}</li>`);
+    (g.unresolved_hits || []).forEach((h) =>
+      items.push(`<li><span class="e-line">片段 #${h.ord} [${esc(h.rule_label)}]：</span>${esc(h.message)}</li>`));
+    (g.timeline_issues || []).forEach((t) =>
+      items.push(`<li><span class="e-line">时间线${t.ord ? ` 片段 #${t.ord}` : ''}：</span>${esc(t.message)}</li>`));
+    (g.invalid_exemptions || []).forEach((x) =>
+      items.push(`<li><span class="e-line">已失效豁免 片段 #${x.ord}：</span>${esc(x.invalid_reason || '')}</li>`));
+  }
+  return `${head}<ul class="issue-list">${items.join('')}</ul>`;
+}
+
+function renderDeliveryPanel(chk, lst) {
+  const panel = $('#deliveryPanel');
+  const gateKeys = ['timeline', 'bilingual', 'actors', 'qc'];
+  const gateHtml = gateKeys.map((k) => renderDeliveryGate(k, chk.gates[k])).join('');
+  const summary = chk.ok
+    ? `<div class="qc-banner ok">✓ 四道闸门全部通过：普通时间线无误、双语译文均已复核、演员全部归属、质检实时核验通过。<b>可以签发交付包</b>。
+         <span class="meta">全部文件将基于当前同一次一致状态生成；签发期间的改稿/改演员/改质检设置不会混入。</span></div>`
+    : `<div class="qc-banner bad">✗ 当前状态不能签发交付包，请按类别处理下列问题后再试；<b>任一项失败都不会留存任何交付包</b>。</div>`;
+
+  const pkgs = lst.packages || [];
+  let listHtml;
+  if (!pkgs.length) {
+    listHtml = '<div class="qc-banner">该分支还没有已签发的交付包。</div>';
+  } else {
+    listHtml = `<table class="qc-table"><thead><tr>
+        <th class="col-ord">编号</th><th>签发时间（UTC）</th><th>片段</th><th>质检规则</th><th>文件 SHA-256</th><th>下载</th>
+      </tr></thead><tbody>${pkgs.map((p) => `
+        <tr>
+          <td class="col-ord">${p.id}</td>
+          <td class="tc-cell">${esc(p.issued_at)}</td>
+          <td>${p.segment_count}</td>
+          <td>${p.rule_version_no ? `v${p.rule_version_no}` : '<span class="meta">未配置</span>'}</td>
+          <td class="dl-sha">
+            ${p.files.map((f) => `<div><span class="dl-role">${esc(deliveryRoleLabel(f.role))}</span>
+              <code title="${f.sha256}">${f.sha256.slice(0, 12)}…</code>
+              <a class="link-btn" href="/api/deliveries/${p.id}/files/${f.role}" download>重下</a></div>`).join('')}
+          </td>
+          <td class="dl-dl"><a class="btn primary" href="/api/deliveries/${p.id}/download" download>下载整包 ZIP</a></td>
+        </tr>`).join('')}
+      </tbody></table>
+      <div class="meta">已签发包内容不可变：后续改稿、改演员或改质检设置都不改变上表包内容，重下载字节始终一致（SHA-256 相同）；删除稿件会一并清理其交付包。</div>`;
+  }
+
+  panel.innerHTML = `
+    <div class="qc-head">
+      <div class="qc-title">排练交付
+        <span class="src-tag">${pkgs.length} 个已签发包</span>
+      </div>
+      <div class="qc-actions">
+        <button id="btnDeliveryCheck">重新检查</button>
+        <button id="btnDeliveryIssue" class="primary" ${chk.ok ? '' : 'disabled'}>签发交付包</button>
+      </div>
+    </div>
+    <div class="dl-gates">${gateHtml}</div>
+    ${summary}
+    <div class="qc-section">
+      <h4>已签发的交付包</h4>
+      ${listHtml}
+    </div>`;
+
+  $('#btnDeliveryCheck').onclick = refreshDeliveryPanel;
+  $('#btnDeliveryIssue').onclick = issueDeliveryPackage;
+}
+
+function deliveryRoleLabel(role) {
+  return ({
+    srt: '普通 SRT',
+    bilingual_srt: '双语 SRT',
+    cue_sheet: '演员走词单',
+    manifest: '交付清单'
+  })[role] || role;
+}
+
+async function issueDeliveryPackage() {
+  if (!confirm('将按当前分支一致状态一次生成并签发交付包（普通 SRT、双语 SRT、演员走词单、清单）。确认签发？')) return;
+  try {
+    const data = await api(`/api/branches/${state.branchId}/deliveries`, { method: 'POST', body: {} });
+    toast(`交付包 ${data.package.name} 已签发`, 'ok');
+    await refreshDeliveryPanel();
+    await deliveryDownload(data.package.id, data.package.zip_filename);
+  } catch (e) {
+    renderDeliveryGateFailure(e);
+    await refreshDeliveryPanel();
+  }
+}
+
+// 签发失败：按类别列出片段/规则问题
+function renderDeliveryGateFailure(e) {
+  const gates = e.data && e.data.gates;
+  const lines = [e.message];
+  if (gates) {
+    for (const k of ['timeline', 'bilingual', 'actors', 'qc']) {
+      const g = gates[k];
+      if (!g || g.ok) continue;
+      lines.push(`\n【${g.label}】`);
+      (g.issues || []).forEach((x) => {
+        const where = x.ord ? `片段 #${x.ord}${x.timecode ? `（${x.timecode}）` : ''}：` : '';
+        lines.push(`· ${where}${x.message || ''}`);
+      });
+      if (k === 'qc') {
+        if (g.message && !(g.issues || []).length) lines.push(`· ${g.message}`);
+        (g.unresolved_hits || []).forEach((h) =>
+          lines.push(`· 片段 #${h.ord} [${h.rule_label}]：${h.message}`));
+        (g.timeline_issues || []).forEach((t) =>
+          lines.push(`· 时间线${t.ord ? ` 片段 #${t.ord}` : ''}：${t.message}`));
+      }
+    }
+  }
+  toast(lines.join('\n'), 'error');
+}
+
+async function deliveryDownload(pid, filename) {
+  const a = document.createElement('a');
+  a.href = `/api/deliveries/${pid}/download`;
+  a.download = filename || '';
+  a.click();
 }
 
 // ---------------- 启动 ----------------

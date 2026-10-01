@@ -369,3 +369,39 @@ table.qc-table { width: 100%; border-collapse: collapse; border: 1px solid var(-
 }
 #cuePanel .col-cue-tc { width: 190px; }
 #cuePanel .col-cue-src { width: 90px; color: var(--muted); }
+
+/* ---------------- 排练交付包 ---------------- */
+#deliveryPanel {
+  margin-top: 22px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px 18px;
+}
+.dl-gates {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 12px;
+  margin-top: 12px;
+}
+.dl-gate {
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+}
+.dl-gate.ok { background: #1f3326; border-color: #2f5a3f; color: #b6f0cb; }
+.dl-gate.bad { background: #332024; border-color: #5a3038; color: #f2b3b8; }
+.dl-gates .issue-list { margin-top: 6px; }
+.dl-sha div { white-space: nowrap; margin-bottom: 2px; }
+.dl-sha code {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11px; color: var(--muted);
+}
+.dl-role { display: inline-block; min-width: 70px; color: var(--text); font-size: 12px; }
+.dl-dl { white-space: nowrap; }
+#deliveryPanel .tc-cell {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 11.5px; white-space: nowrap; color: var(--muted);
+}
